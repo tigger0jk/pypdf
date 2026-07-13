@@ -20,7 +20,7 @@ from pypdf import (
     Transformation,
 )
 from pypdf.annotations import Link
-from pypdf.errors import DeprecationError, PageSizeNotDefinedError, PdfReadError, PyPdfError
+from pypdf.errors import DeprecationError, LimitReachedError, PageSizeNotDefinedError, PdfReadError, PyPdfError
 from pypdf.generic import (
     ArrayObject,
     ByteStringObject,
@@ -71,11 +71,11 @@ def test_writer_clone():
     reader = PdfReader(src)
     writer = PdfWriter(clone_from=reader)
     assert len(writer.pages) == 4
-    assert "PageObject" in str(type(writer.pages[0]))
+    assert isinstance(writer.pages[0], PageObject)
 
     writer = PdfWriter(clone_from=src)
     assert len(writer.pages) == 4
-    assert "PageObject" in str(type(writer.pages[0]))
+    assert isinstance(writer.pages[0], PageObject)
 
 
 def test_clone_metadata():
@@ -234,6 +234,10 @@ def writer_operate(writer: PdfWriter) -> None:
     writer.page_mode = NameObject("/UseOC")
     assert writer._get_page_mode() == "/UseOC"
     writer.insert_blank_page(width=100, height=100)
+    page = writer.insert_blank_page(width=100)
+    assert page.mediabox.height == 100
+    page = writer.insert_blank_page(height=100)
+    assert page.mediabox.width == 100
     writer.insert_blank_page()  # without parameters
 
     writer.remove_images()
@@ -249,6 +253,88 @@ def writer_operate(writer: PdfWriter) -> None:
     for k, v in writer._idnum_hash.items():
         assert v.pdf == writer
         assert k in objects_hash, f"Missing {v}"
+
+
+def test_insert_blank_page():
+    writer = PdfWriter(clone_from=RESOURCE_ROOT / "crazyones.pdf")
+
+    old_page_count = len(writer.pages)
+
+    old_page = writer.pages[0]
+    page = writer.insert_blank_page(index=0)
+    assert len(writer.pages) == old_page_count + 1
+    assert page.mediabox.width == old_page.mediabox.width
+    assert page.mediabox.height == old_page.mediabox.height
+
+    old_page = writer.pages[0]
+    page = writer.insert_blank_page(width=10, index=0)
+    assert len(writer.pages) == old_page_count + 2
+    assert page.mediabox.width == 10
+    assert page.mediabox.height == old_page.mediabox.height
+
+    old_page = writer.pages[0]
+    page = writer.insert_blank_page(width=-10, index=0)
+    assert len(writer.pages) == old_page_count + 3
+    assert page.mediabox.width == old_page.mediabox.width
+    assert page.mediabox.height == old_page.mediabox.height
+
+    old_page = writer.pages[0]
+    page = writer.insert_blank_page(height=20, index=0)
+    assert len(writer.pages) == old_page_count + 4
+    assert page.mediabox.width == old_page.mediabox.width
+    assert page.mediabox.height == 20
+
+    old_page = writer.pages[0]
+    page = writer.insert_blank_page(height=-20, index=0)
+    assert len(writer.pages) == old_page_count + 5
+    assert page.mediabox.width == old_page.mediabox.width
+    assert page.mediabox.height == old_page.mediabox.height
+
+    page = writer.insert_blank_page(width=30, height=40, index=0)
+    assert len(writer.pages) == old_page_count + 6
+    assert page.mediabox.width == 30
+    assert page.mediabox.height == 40
+
+    old_page = writer.pages[0]
+    page = writer.insert_blank_page(width=-30, height=-40, index=0)
+    assert len(writer.pages) == old_page_count + 7
+    assert page.mediabox.width == old_page.mediabox.width
+    assert page.mediabox.height == old_page.mediabox.height
+
+    page = writer.insert_blank_page(width=50, height=60, index=len(writer.pages))
+    assert len(writer.pages) == old_page_count + 8
+    assert page.mediabox.width == 50
+    assert page.mediabox.height == 60
+
+    old_page = writer.pages[0]
+    page = writer.insert_blank_page(width=-50, height=-60, index=-len(writer.pages))
+    assert len(writer.pages) == old_page_count + 9
+    assert page.mediabox.width == old_page.mediabox.width
+    assert page.mediabox.height == old_page.mediabox.height
+
+    page = writer.insert_blank_page(width=70, height=80, index=len(writer.pages) // 2)
+    assert len(writer.pages) == old_page_count + 10
+    assert page.mediabox.width == 70
+    assert page.mediabox.height == 80
+
+    page = writer.insert_blank_page(width=70, height=80, index=-len(writer.pages) // 2)
+    assert len(writer.pages) == old_page_count + 11
+    assert page.mediabox.width == 70
+    assert page.mediabox.height == 80
+
+    num_pages = len(writer.pages)
+
+    with pytest.raises(
+        IndexError,
+        match=re.escape(f"Index should be in range [-{num_pages}, {num_pages}]"),
+    ):
+        page = writer.insert_blank_page(width=90, height=100, index=len(writer.pages) + 1)
+
+    with pytest.raises(
+        IndexError,
+        match=re.escape(f"Index should be in range [-{num_pages}, {num_pages}]"),
+    ):
+        page = writer.insert_blank_page(width=-90, height=-100, index=-len(writer.pages) - 1)
 
 
 @pytest.mark.parametrize(
@@ -378,7 +464,7 @@ def test_remove_images_sub_level():
     """Cf #2035"""
     url = "https://github.com/py-pdf/pypdf/files/12394781/2210.03142-1.pdf"
     name = "iss2103.pdf"
-    writer = PdfWriter(clone_from=BytesIO(get_data_from_url(url, name=name)))
+    writer = PdfWriter(clone_from=BytesIO(get_data_from_url(url=url, name=name)))
     writer.remove_images()
     assert (
         len(
@@ -866,7 +952,7 @@ def test_sweep_indirect_references_nullobject_exception(pdf_file_path):
     # TODO: Check this more closely... this looks weird
     url = "https://github.com/user-attachments/files/18381699/tika-924666.pdf"
     name = "tika-924666.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     merger = PdfWriter()
     merger.append(reader)
     merger.write(pdf_file_path)
@@ -890,7 +976,7 @@ def test_sweep_indirect_references_nullobject_exception(pdf_file_path):
 )
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_some_appends(pdf_file_path, url, name):
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     merger = PdfWriter()
     merger.append(reader)
     merger.write(pdf_file_path)
@@ -1019,7 +1105,7 @@ def test_startup_dest():
 
     assert pdf_file_writer.open_destination is None
     pdf_file_writer.open_destination = pdf_file_writer.pages[9]
-    # checked also using Acrobrat to verify the good page is opened
+    # checked also using Acrobat to verify the good page is opened
     op = pdf_file_writer.root_object["/OpenAction"]
     assert op[0] == pdf_file_writer.pages[9].indirect_reference
     assert op[1] == "/Fit"
@@ -1038,7 +1124,7 @@ def test_startup_dest():
     assert "Invalid Destination" in str(exc.value)
 
     pdf_file_writer.open_destination = "Test"
-    # checked also using Acrobrat to verify open_destination
+    # checked also using Acrobat to verify open_destination
     op = pdf_file_writer.root_object["/OpenAction"]
     assert isinstance(op, TextStringObject)
     assert op == "Test"
@@ -1058,7 +1144,7 @@ def test_startup_dest():
 def test_iss471():
     url = "https://github.com/py-pdf/pypdf/files/9139245/book.pdf"
     name = "book_471.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
 
     writer = PdfWriter()
     writer.append(reader, excluded_fields=[])
@@ -1071,7 +1157,7 @@ def test_iss471():
 def test_reset_translation():
     url = "https://github.com/user-attachments/files/18381699/tika-924666.pdf"
     name = "tika-924666.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader, (0, 10))
     nb = len(writer._objects)
@@ -1109,7 +1195,7 @@ def test_threads_empty():
 def test_append_without_annots_and_articles():
     url = "https://github.com/user-attachments/files/18381699/tika-924666.pdf"
     name = "tika-924666.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader, None, (0, 10), True, ["/B"])
     writer.reset_translation()
@@ -1128,11 +1214,11 @@ def test_append_without_annots_and_articles():
 def test_append_multiple():
     url = "https://github.com/user-attachments/files/18381699/tika-924666.pdf"
     name = "tika-924666.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(
         reader, [0, 0, 0]
-    )  # to demonstre multiple insertion of same page at once
+    )  # to demonstrate multiple insertion of same page at once
     writer.append(reader, [0, 0, 0])  # second pack
     pages = writer.root_object["/Pages"]["/Kids"]
     assert pages[0] not in pages[1:]  # page not repeated
@@ -1278,7 +1364,7 @@ def test_set_page_label(pdf_file_path):
 def test_iss1601():
     url = "https://github.com/py-pdf/pypdf/files/10579503/badges-38.pdf"
     name = "badge-38.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     original_cs_operations = ContentStream(
         reader.pages[0].get_contents(), reader
     ).operations
@@ -1348,13 +1434,13 @@ def test_iss1614():
     # test of an annotation(link) directly stored in the /Annots in the page
     url = "https://github.com/py-pdf/pypdf/files/10669995/broke.pdf"
     name = "iss1614.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader)
     # test for 2nd error case reported in #1614
     url = "https://github.com/py-pdf/pypdf/files/10696390/broken.pdf"
     name = "iss1614.2.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer.append(reader)
 
 
@@ -1363,7 +1449,7 @@ def test_new_removes():
     # test of an annotation(link) directly stored in the /Annots in the page
     url = "https://github.com/py-pdf/pypdf/files/10807951/tt.pdf"
     name = "iss1650.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
 
     writer = PdfWriter()
     writer.clone_document_from_reader(reader)
@@ -1421,7 +1507,7 @@ def test_new_removes():
 
     url = "https://github.com/py-pdf/pypdf/files/10832029/tt2.pdf"
     name = "GeoBaseWithComments.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer.append(reader)
     writer.remove_objects_from_page(writer.pages[0], [ObjectDeletionFlag.LINKS])
     assert "/Links" not in [
@@ -1450,7 +1536,7 @@ def test_new_removes():
 def test_late_iss1654():
     url = "https://github.com/py-pdf/pypdf/files/10935632/bid1.pdf"
     name = "bid1.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.clone_document_from_reader(reader)
     for p in writer.pages:
@@ -1464,7 +1550,7 @@ def test_iss1723():
     # test of an annotation(link) directly stored in the /Annots in the page
     url = "https://github.com/py-pdf/pypdf/files/11015242/inputFile.pdf"
     name = "iss1723.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader, (3, 5))
 
@@ -1476,7 +1562,7 @@ def test_iss1767():
     # cloning
     url = "https://github.com/py-pdf/pypdf/files/11138472/test.pdf"
     name = "iss1767.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     PdfWriter(clone_from=reader)
 
 
@@ -1490,10 +1576,10 @@ def test_named_dest_page_number():
     name = "central.pdf"
     writer = PdfWriter()
     writer.add_blank_page(100, 100)
-    writer.append(BytesIO(get_data_from_url(url, name=name)), pages=[0, 1, 2])
+    writer.append(BytesIO(get_data_from_url(url=url, name=name)), pages=[0, 1, 2])
     assert len(writer.root_object["/Names"]["/Dests"]["/Names"]) == 2
     assert writer.root_object["/Names"]["/Dests"]["/Names"][-1][0] == (1 + 1)
-    writer.append(BytesIO(get_data_from_url(url, name=name)))
+    writer.append(BytesIO(get_data_from_url(url=url, name=name)))
     assert len(writer.root_object["/Names"]["/Dests"]["/Names"]) == 6
     writer2 = PdfWriter()
     writer2.add_blank_page(100, 100)
@@ -1693,7 +1779,7 @@ def test_update_form_fields2(caplog):
 
     for file in my_files:
         reader = PdfReader(
-            BytesIO(get_data_from_url(my_files[file]["url"], name=my_files[file]["path"]))
+            BytesIO(get_data_from_url(url=my_files[file]["url"], name=my_files[file]["path"]))
         )
         reader.add_form_topname(file)
         writer = PdfWriter(clone_from=reader)
@@ -1729,6 +1815,43 @@ def test_update_form_fields2(caplog):
 
 
 @pytest.mark.enable_socket
+def test_update_form_fields3(caplog, tmp_path):
+    url = "https://github.com/user-attachments/files/21073581/CERERE.INMATRICULARE.form.pdf"
+    name = "iss3361.pdf"
+    writer = PdfWriter()
+    output = BytesIO()
+    writer.append(BytesIO(get_data_from_url(url=url, name=name)))
+    # First test for the case where fonttools is missing.
+    with mock.patch("pypdf._font.HAS_FONTTOOLS", False):
+        writer.update_page_form_field_values(writer.pages[0], {"subsemnatul": "Σ"})
+        assert "Unable to use embedded font for encoding" in caplog.text
+        # Also test that an ImportError is raised by the Font class
+        assert "The 'fontTools' library is required to use 'from_truetype_font_file'" in caplog.text
+
+    # Test with fonttools
+    data = {
+        "subsemnatul": "Σὲ γνωρίζω ἀπὸ τὴν κόψη",
+        "localitatea": "شهرزاد",
+        "strada": "Căpitan Nicolae Licăreț",
+        "adresa_judet": "Конференция",
+    }
+    writer.update_page_form_field_values(writer.pages[0], data, flatten=True)
+    # Test that we have changed the font resource from /Ubuntu to /PYPDF1
+    new_font_resource = "/PYPDF1"
+    assert new_font_resource in writer.pages[0]["/Annots"][0]["/DA"]
+    assert new_font_resource in writer.pages[0]["/Resources"]["/Font"]
+    assert new_font_resource in writer._root_object["/AcroForm"]["/DR"]["/Font"]
+    writer.write(output)
+    output.seek(0)
+    reader = PdfReader(output)
+    extracted_text = reader.pages[0].extract_text()
+    for expected_value in data.values():
+        if expected_value != "شهرزاد":
+            assert expected_value in extracted_text
+    assert "Text string 'شهرزاد' contains characters not supported by font encoding." in caplog.text
+
+
+@pytest.mark.enable_socket
 def test_iss1862():
     # The file here has "/B" entry to define the font in a object below the page
     # The excluded field shall be considered only at first level (page) and not
@@ -1736,7 +1859,7 @@ def test_iss1862():
     url = "https://github.com/py-pdf/pypdf/files/11708801/intro.pdf"
     name = "iss1862.pdf"
     writer = PdfWriter()
-    writer.append(BytesIO(get_data_from_url(url, name=name)))
+    writer.append(BytesIO(get_data_from_url(url=url, name=name)))
     # check that "/B" is in the font
     writer.pages[0]["/Resources"]["/Font"]["/F1"]["/CharProcs"]["/B"].get_data()
 
@@ -1759,10 +1882,10 @@ def test_empty_objects_before_cloning():
 def test_watermark():
     url = "https://github.com/py-pdf/pypdf/files/11985889/bg.pdf"
     name = "bgwatermark.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     url = "https://github.com/py-pdf/pypdf/files/11985888/source.pdf"
     name = "srcwatermark.pdf"
-    writer = PdfWriter(clone_from=BytesIO(get_data_from_url(url, name=name)))
+    writer = PdfWriter(clone_from=BytesIO(get_data_from_url(url=url, name=name)))
     for p in writer.pages:
         p.merge_page(reader.pages[0], over=False)
 
@@ -1779,10 +1902,10 @@ def test_watermark():
 def test_watermarking_speed():
     url = "https://github.com/py-pdf/pypdf/files/11985889/bg.pdf"
     name = "bgwatermark.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     url = "https://arxiv.org/pdf/2201.00214.pdf"
     name = "2201.00214.pdf"
-    writer = PdfWriter(clone_from=BytesIO(get_data_from_url(url, name=name)))
+    writer = PdfWriter(clone_from=BytesIO(get_data_from_url(url=url, name=name)))
     for p in writer.pages:
         p.merge_page(reader.pages[0], over=False)
     out_pdf_bytesio = BytesIO()
@@ -1797,10 +1920,10 @@ def test_watermark_rendering(tmp_path):
     """Ensure the visual appearance of watermarking stays correct."""
     url = "https://github.com/py-pdf/pypdf/files/11985889/bg.pdf"
     name = "bgwatermark.pdf"
-    watermark = PdfReader(BytesIO(get_data_from_url(url, name=name))).pages[0]
+    watermark = PdfReader(BytesIO(get_data_from_url(url=url, name=name))).pages[0]
     url = "https://github.com/py-pdf/pypdf/files/11985888/source.pdf"
     name = "srcwatermark.pdf"
-    page = PdfReader(BytesIO(get_data_from_url(url, name=name))).pages[0]
+    page = PdfReader(BytesIO(get_data_from_url(url=url, name=name))).pages[0]
     writer = PdfWriter()
     page = writer.add_page(page)
     page.merge_page(watermark, over=False)
@@ -1808,7 +1931,7 @@ def test_watermark_rendering(tmp_path):
     target_png_path = tmp_path / "target.png"
     url = "https://github.com/py-pdf/pypdf/assets/96178532/d5c72d0e-7047-4504-bbf6-bc591c80d7c0"
     name = "dstwatermark.png"
-    target_png_path.write_bytes(get_data_from_url(url, name=name))
+    target_png_path.write_bytes(get_data_from_url(url=url, name=name))
 
     pdf_path = tmp_path / "out.pdf"
     png_path = tmp_path / "out.png"
@@ -1871,7 +1994,7 @@ def test_watermarking_reportlab_rendering(tmp_path):
 def test_da_missing_in_annot():
     url = "https://github.com/py-pdf/pypdf/files/12136285/Building.Division.Permit.Application.pdf"
     name = "BuildingDivisionPermitApplication.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter(clone_from=reader)
     writer.update_page_form_field_values(
         writer.pages[0], {"PCN-1": "0"}, auto_regenerate=False
@@ -1955,7 +2078,7 @@ def test_germanfields():
     """Cf #2035"""
     url = "https://github.com/py-pdf/pypdf/files/12194195/test.pdf"
     name = "germanfields.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter(clone_from=reader)
     form_fields = {"Text Box 1": "test æ ø å"}
     writer.update_page_form_field_values(
@@ -1978,7 +2101,7 @@ def test_no_t_in_articles():
     """Cf #2078"""
     url = "https://github.com/py-pdf/pypdf/files/12311735/bad.pdf"
     name = "iss2078.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader)
 
@@ -1988,7 +2111,7 @@ def test_no_i_in_articles():
     """Cf #2089"""
     url = "https://github.com/py-pdf/pypdf/files/12352793/kim2002.pdf"
     name = "iss2089.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader)
 
@@ -2001,7 +2124,7 @@ def test_damaged_pdf_length_returning_none():
     """
     url = "https://github.com/py-pdf/pypdf/files/12168578/bad_pdf_example.pdf"
     name = "iss140_bad_pdf.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader)
 
@@ -2011,7 +2134,7 @@ def test_viewerpreferences():
     """Add Tests for ViewerPreferences"""
     url = "https://github.com/py-pdf/pypdf/files/9175966/2015._pb_decode_pg0.pdf"
     name = "2015._pb_decode_pg0.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     v = reader.viewer_preferences
     assert v.center_window == True  # noqa: E712
     writer = PdfWriter(clone_from=reader)
@@ -2093,7 +2216,7 @@ def test_extra_spaces_in_da_text(caplog):
 def test_object_contains_indirect_reference_to_self():
     url = "https://github.com/py-pdf/pypdf/files/12389243/testbook.pdf"
     name = "iss2102.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     width, height = 595, 841
     outpage = writer.add_blank_page(width, height)
@@ -2196,7 +2319,7 @@ PROBLEMS 74
 REFERENCES 76"""
     url = "https://github.com/py-pdf/pypdf/files/12797067/test-12.pdf"
     name = "iss2233.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter(clone_from=reader)
 
     bookmarks, history_indent = [], []
@@ -2284,7 +2407,7 @@ def test_reattach_fields():
     """
     url = "https://github.com/py-pdf/pypdf/files/14241368/ExampleForm.pdf"
     name = "iss2453.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     for p in reader.pages:
         writer.add_page(p)
@@ -2381,7 +2504,7 @@ def test_i_in_choice_fields():
     """Cf #2611"""
     url = "https://github.com/py-pdf/pypdf/files/15176321/FRA.F.6180.150.pdf"
     name = "iss2611.pdf"
-    writer = PdfWriter(BytesIO(get_data_from_url(url, name=name)))
+    writer = PdfWriter(BytesIO(get_data_from_url(url=url, name=name)))
     assert "/I" in writer.get_fields()["State"].indirect_reference.get_object()
     writer.update_page_form_field_values(
         writer.pages[0], {"State": "NY"}, auto_regenerate=False
@@ -2417,7 +2540,7 @@ def test_no_resource_for_14_std_fonts():
     """Cf #2670"""
     url = "https://github.com/py-pdf/pypdf/files/15405390/f1040.pdf"
     name = "iss2670.pdf"
-    writer = PdfWriter(BytesIO(get_data_from_url(url, name=name)))
+    writer = PdfWriter(BytesIO(get_data_from_url(url=url, name=name)))
     p = writer.pages[0]
     for a in p["/Annots"]:
         a = a.get_object()
@@ -2433,7 +2556,7 @@ def test_field_box_upside_down():
     """Cf #2724"""
     url = "https://github.com/user-attachments/files/15996356/FRA.F.6180.55.pdf"
     name = "iss2724.pdf"
-    writer = PdfWriter(BytesIO(get_data_from_url(url, name=name)))
+    writer = PdfWriter(BytesIO(get_data_from_url(url=url, name=name)))
     writer.update_page_form_field_values(None, {"FreightTrainMiles": "0"})
     assert writer.pages[0]["/Annots"][13].get_object()["/AP"]["/N"].get_data() == (
         b"q\n/Tx BMC \nq\n2 1 102.29520000000001 9.835000000000036 re\n"
@@ -2450,7 +2573,7 @@ def test_matrix_entry_in_field_annots():
     """Cf #2731"""
     url = "https://github.com/user-attachments/files/16036514/template.pdf"
     name = "iss2731.pdf"
-    writer = PdfWriter(BytesIO(get_data_from_url(url, name=name)))
+    writer = PdfWriter(BytesIO(get_data_from_url(url=url, name=name)))
     writer.update_page_form_field_values(
         writer.pages[0],
         {"Stellenbezeichnung_1": "some filled in text"},
@@ -2464,9 +2587,9 @@ def test_compress_identical_objects():
     """Cf #2728 and #2794"""
     url = "https://github.com/user-attachments/files/16575458/tt2.pdf"
     name = "iss2794.pdf"
-    in_bytes = BytesIO(get_data_from_url(url, name=name))
+    in_bytes = BytesIO(get_data_from_url(url=url, name=name))
     writer = PdfWriter(in_bytes)
-    writer.compress_identical_objects(remove_orphans=False)
+    writer.compress_identical_objects(remove_unreferenced=False)
     out1 = BytesIO()
     writer.write(out1)
     assert 0.5 * len(in_bytes.getvalue()) > len(out1.getvalue())
@@ -2476,7 +2599,60 @@ def test_compress_identical_objects():
     out2 = BytesIO()
     writer.write(out2)
     assert len(out1.getvalue()) - 100 < len(out2.getvalue())
-    writer.compress_identical_objects(remove_identicals=False)
+    writer.compress_identical_objects(remove_duplicates=False)
+    out3 = BytesIO()
+    writer.write(out3)
+    assert len(out2.getvalue()) > len(out3.getvalue())
+
+
+def test_compress_identical_objects__remove_unreferenced():
+    writer = PdfWriter(clone_from=RESOURCE_ROOT / "crazyones.pdf")
+    writer._add_object(DictionaryObject({}))
+    dictionary_object = DictionaryObject({NameObject("/Testing"): NameObject("/UniqueNameForTesting")})
+    reference = writer._add_object(dictionary_object)
+
+    writer.compress_identical_objects(remove_unreferenced=False)
+    assert writer.get_object(reference) == dictionary_object
+
+    writer.compress_identical_objects(remove_unreferenced=True)
+    with pytest.raises(
+            expected_exception=PdfReadError,
+            match=rf"^Object IndirectObject\({reference.idnum}, 0, \d+\) not found!$"
+    ):
+        writer.get_object(reference)
+
+
+@pytest.mark.enable_socket
+def test_compress_identical_objects__deprecation():
+    url = "https://github.com/user-attachments/files/16575458/tt2.pdf"
+    name = "iss2794.pdf"
+    in_bytes = BytesIO(get_data_from_url(url=url, name=name))
+    writer = PdfWriter(in_bytes)
+    with pytest.warns(
+        DeprecationWarning,
+        match=(
+            r"^remove_orphans is deprecated and will be removed in pypdf 7\.0\.0\. "
+            r"Use remove_unreferenced instead\.$"
+        ),
+    ):
+        writer.compress_identical_objects(remove_orphans=True)
+    out1 = BytesIO()
+    writer.write(out1)
+    assert 0.5 * len(in_bytes.getvalue()) > len(out1.getvalue())
+    writer.remove_page(
+        1
+    )  # page0 contains fields which keep reference to the deleted page
+    out2 = BytesIO()
+    writer.write(out2)
+    assert len(out1.getvalue()) - 100 < len(out2.getvalue())
+    with pytest.warns(
+        DeprecationWarning,
+        match=(
+            r"^remove_identicals is deprecated and will be removed in pypdf 7\.0\.0\. "
+            r"Use remove_duplicates instead\.$"
+        ),
+    ):
+        writer.compress_identical_objects(remove_identicals=True)
     out3 = BytesIO()
     writer.write(out3)
     assert len(out2.getvalue()) > len(out3.getvalue())
@@ -2578,7 +2754,7 @@ def test_increment_writer(caplog):
     # insert pages in a tree
     url = "https://github.com/py-pdf/pypdf/files/13946477/panda.pdf"
     name = "iss2343b.pdf"
-    writer = PdfWriter(BytesIO(get_data_from_url(url, name=name)), incremental=True)
+    writer = PdfWriter(BytesIO(get_data_from_url(url=url, name=name)), incremental=True)
     reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
     pg = writer.insert_page(reader.pages[0], 4)
     assert (
@@ -2608,7 +2784,7 @@ def test_append_pdf_with_dest_without_page(caplog):
     """Tests for #2842"""
     url = "https://github.com/user-attachments/files/16990834/test.pdf"
     name = "iss2842.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader)
     assert "/__WKANCHOR_8" not in writer.named_destinations
@@ -2620,7 +2796,7 @@ def test_destination_is_nullobject():
     """Tests for #2958"""
     url = "https://github.com/user-attachments/files/17822279/C0.00.-.COVER.SHEET.pdf"
     name = "iss2958.pdf"
-    source_data = BytesIO(get_data_from_url(url, name=name))
+    source_data = BytesIO(get_data_from_url(url=url, name=name))
     writer = PdfWriter()
     writer.append(source_data)
 
@@ -2630,7 +2806,7 @@ def test_destination_page_is_none():
     """Tests for #2963"""
     url = "https://github.com/user-attachments/files/17879461/3.pdf"
     name = "iss2963.pdf"
-    reader = PdfReader(BytesIO(get_data_from_url(url, name=name)))
+    reader = PdfReader(BytesIO(get_data_from_url(url=url, name=name)))
     writer = PdfWriter()
     writer.append(reader)
 
@@ -2685,12 +2861,12 @@ def test_inline_image_q_operator_handling(tmp_path):
     """Test for #2927"""
     pdf_url = "https://github.com/user-attachments/files/17614880/test_clean.pdf"
     pdf_name = "iss2927.pdf"
-    pdf_data = BytesIO(get_data_from_url(pdf_url, name=pdf_name))
+    pdf_data = BytesIO(get_data_from_url(url=pdf_url, name=pdf_name))
 
     png_url = "https://github.com/user-attachments/assets/abe16f48-9afa-4179-b1e8-62be27b95c26"
     png_name = "iss2927.png"
     expected_png_path = tmp_path / "expected.png"
-    expected_png_path.write_bytes(get_data_from_url(png_url, name=png_name))
+    expected_png_path.write_bytes(get_data_from_url(url=png_url, name=png_name))
 
     writer = PdfWriter()
     writer.append(pdf_data)
@@ -2765,7 +2941,7 @@ def test_compress_identical_objects__after_remove_images():
     """Test for #3237"""
     writer = PdfWriter(clone_from=RESOURCE_ROOT / "AutoCad_Diagram.pdf")
     writer.remove_images()
-    writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
+    writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
 
 
 def test_merge__process_named_dests__no_dests_in_source_file():
@@ -2822,7 +2998,7 @@ def test_insert_filtered_annotations__annotations_are_no_list(caplog):
     """Tests for #3320"""
     url = "https://github.com/user-attachments/files/20818089/bugpdf.pdf"
     name = "issue3320.pdf"
-    source_data = BytesIO(get_data_from_url(url, name=name))
+    source_data = BytesIO(get_data_from_url(url=url, name=name))
     reader = PdfReader(source_data)
     writer = PdfWriter()
     writer.append(reader)
@@ -2877,8 +3053,7 @@ def test_wrong_size_in_incremental_pdf(caplog):
     with pytest.raises(expected_exception=PdfReadError, match=r"^Object count 19 exceeds defined trailer size 2$"):
         writer.clone_reader_document_root(reader=PdfReader(BytesIO(modified_data)))
 
-    with pytest.raises(expected_exception=PdfReadError, match=r"^Got index error while flattening\.$"):
-        PdfWriter(BytesIO(modified_data), incremental=True)
+    PdfWriter(BytesIO(modified_data), incremental=True)
 
 
 @pytest.mark.enable_socket
@@ -2949,3 +3124,206 @@ def test_flatten_form_field_with_signature():
     writer.write(b)
 
     _ = PdfReader(b)
+
+
+@pytest.mark.timeout(10)
+def test_clone_reader_document_root__incremental__large_size():
+    parts: list[bytes] = [b"%PDF-1.4\n"]
+    offsets: dict[int, int] = {}
+
+    for object_number, body in (
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+    ):
+        offsets[object_number] = sum(len(p) for p in parts)
+        parts.append(f"{object_number} 0 obj\n".encode())
+        parts.append(body + b"\n")
+        parts.append(b"endobj\n")
+
+    xref_offset = sum(len(p) for p in parts)
+    parts.append(b"xref\n")
+    parts.append(b"0 4\n")
+    parts.append(b"0000000000 65535 f \n")
+    parts.append(f"{offsets[1]:010d} 00000 n \n".encode())
+    parts.append(f"{offsets[2]:010d} 00000 n \n".encode())
+    parts.append(f"{offsets[3]:010d} 00000 n \n".encode())
+    parts.append(b"trailer\n<< /Root 1 0 R /Size 5000000 >>\n")
+    parts.append(f"startxref\n{xref_offset}\n%%EOF\n".encode())
+    data = b"".join(parts)
+
+    writer = PdfWriter(BytesIO(data), incremental=True)
+    assert writer._objects == [
+        DictionaryObject({
+            NameObject("/Pages"): IndirectObject(2, 0, writer),
+            NameObject("/Type"): NameObject("/Catalog")
+        }),
+        DictionaryObject({
+            NameObject("/Count"): NumberObject(1),
+            NameObject("/Kids"): ArrayObject([
+                IndirectObject(3, 0, writer)
+            ]),
+            NameObject("/Type"): NameObject("/Pages")
+        }),
+        DictionaryObject({
+            NameObject("/MediaBox"): ArrayObject([
+                NumberObject(0), NumberObject(0), NumberObject(1), NumberObject(1)
+            ]),
+            NameObject("/Parent"): IndirectObject(2, 0, writer),
+            NameObject("/Type"): NameObject("/Page")
+        })
+    ]
+
+
+def test_collect_incremental_clone_object_ids():
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    # No limit.
+    writer = PdfWriter()
+    assert writer._collect_incremental_clone_object_ids(reader) == list(range(1, 23))
+
+    # Size limit.
+    writer = PdfWriter(incremental_clone_object_count_limit=13)
+    with pytest.raises(
+            expected_exception=LimitReachedError,
+            match=r"^Incremental clone object count 22 exceeds maximum allowed count 13\.$"
+    ):
+        writer._collect_incremental_clone_object_ids(reader)
+
+    # Number limit.
+    writer = PdfWriter(incremental_clone_object_id_limit=17)
+    with pytest.raises(
+            expected_exception=LimitReachedError,
+            match=r"^Incremental clone object ID 22 exceeds maximum allowed ID 17\.$"
+    ):
+        writer._collect_incremental_clone_object_ids(reader)
+
+
+def test_clone_reader_document_root__incremental__unknown_object():
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    data = BytesIO()
+    writer.write(data)
+    data.flush()
+
+    writer = PdfWriter(data, incremental=True)
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+    with mock.patch.object(writer, "_collect_incremental_clone_object_ids", return_value=[*list(range(1, 23)), 42]):
+        writer.clone_reader_document_root(reader)
+
+
+def test_encrypt__incremental():
+    writer = PdfWriter(RESOURCE_ROOT / "crazyones.pdf", incremental=True)
+    writer.add_blank_page(width=10, height=10)
+
+    with pytest.raises(NotImplementedError):
+        writer.encrypt(user_password="dummy")
+
+
+@pytest.mark.timeout(5)
+def test_get_filtered_outline__first__cyclic(caplog) -> None:
+    writer = PdfWriter()
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    dictionary1 = DictionaryObject({
+        NameObject("/Type"): NameObject("/Outlines")
+    })
+    reference1 = writer._add_object(dictionary1)
+    dictionary2 = DictionaryObject({
+        NameObject("/Type"): NameObject("/Outlines")
+    })
+    reference2 = writer._add_object(dictionary2)
+    dictionary3 = DictionaryObject({
+        NameObject("/First"): reference2,
+        NameObject("/Type"): NameObject("/Outlines")
+    })
+    reference3 = writer._add_object(dictionary3)
+    dictionary1[NameObject("/First")] = reference3
+    dictionary2[NameObject("/First")] = reference1
+
+    assert writer._get_filtered_outline(node=dictionary1, pages={}, reader=reader) == []
+    assert caplog.messages == ["Detected cycle in outlines."]
+
+
+@pytest.mark.timeout(5)
+def test_get_filtered_outline__next_first__cyclic(caplog) -> None:
+    writer = PdfWriter()
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    dictionary1 = DictionaryObject({
+        NameObject("/Title"): TextStringObject("test")
+    })
+    _reference1 = writer._add_object(dictionary1)
+    dictionary2 = DictionaryObject({
+        NameObject("/Type"): NameObject("/Outlines")
+    })
+    reference2 = writer._add_object(dictionary2)
+    dictionary1[NameObject("/Next")] = reference2
+    dictionary2[NameObject("/First")] = reference2
+
+    assert writer._get_filtered_outline(node=dictionary1, pages={}, reader=reader) == []
+    assert caplog.messages == ["Detected cycle in outlines."]
+
+
+@pytest.mark.timeout(5)
+def test_get_filtered_outline__next_next__cyclic(caplog) -> None:
+    writer = PdfWriter()
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    dictionary1 = DictionaryObject({
+        NameObject("/Title"): TextStringObject("test")
+    })
+    reference1 = writer._add_object(dictionary1)
+    dictionary2 = DictionaryObject({
+        NameObject("/Title"): TextStringObject("test")
+    })
+    reference2 = writer._add_object(dictionary2)
+    dictionary3 = DictionaryObject({
+        NameObject("/Next"): reference2,
+        NameObject("/Title"): TextStringObject("test")
+    })
+    reference3 = writer._add_object(dictionary3)
+    dictionary1[NameObject("/Next")] = reference3
+    dictionary2[NameObject("/Next")] = reference1
+
+    assert writer._get_filtered_outline(node=dictionary1, pages={}, reader=reader) == []
+    assert caplog.messages == ["Detected cycle in outlines."]
+
+
+def test_get_filtered_outline__node_is_none() -> None:
+    writer = PdfWriter()
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    assert writer._get_filtered_outline(node=None, pages={}, reader=reader) == []
+
+
+@pytest.mark.timeout(5)
+def test_add_articles_thread__cyclic() -> None:
+    writer = PdfWriter()
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    thread = DictionaryObject()
+    writer._add_object(thread)
+    article1 = DictionaryObject({
+        NameObject("/P"): NullObject(),
+    })
+    reference1 = writer._add_object(article1)
+    article2 = DictionaryObject({
+        NameObject("/P"): NullObject(),
+    })
+    reference2 = writer._add_object(article2)
+    article3 = DictionaryObject({
+        NameObject("/P"): NullObject(),
+    })
+    reference3 = writer._add_object(article3)
+
+    thread[NameObject("/F")] = reference1
+    article1[NameObject("/N")] = reference2
+    article2[NameObject("/N")] = reference3
+    article3[NameObject("/N")] = reference3
+
+    with pytest.raises(
+            expected_exception=LimitReachedError,
+            match=r"^Detected cyclic article structure\.$"
+    ):
+        writer._add_articles_thread(thread=thread, pages={}, reader=reader)

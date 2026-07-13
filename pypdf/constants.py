@@ -1,11 +1,14 @@
 """Various constants, enums, and flags to aid readability."""
 
+import sys
 from enum import Enum, IntFlag, auto, unique
 
-
-class StrEnum(str, Enum):  # Once we are on Python 3.11+: enum.StrEnum
-    def __str__(self) -> str:
-        return str(self.value)
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    class StrEnum(str, Enum):
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 class Core:
@@ -221,7 +224,7 @@ class StreamAttributes:
 
     LENGTH = "/Length"  # integer, required
     FILTER = "/Filter"  # name or array of names, optional
-    DECODE_PARMS = "/DecodeParms"  # variable, optional -- 'decodeParams is wrong
+    DECODE_PARMS = "/DecodeParms"  # variable, optional; /DecodeParams is wrong
 
 
 @unique

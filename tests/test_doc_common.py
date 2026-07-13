@@ -20,7 +20,9 @@ from pypdf.generic import (
     EncodedStreamObject,
     NameObject,
     NullObject,
+    NumberObject,
     TextStringObject,
+    TreeObject,
     ViewerPreferences,
 )
 from tests import RESOURCE_ROOT, SAMPLE_ROOT, get_data_from_url
@@ -188,6 +190,22 @@ def test_viewer_preferences__indirect_reference():
     assert (0, 24) in reader.resolved_objects
     assert id(viewer_preferences) == id(reader.viewer_preferences)
     assert id(viewer_preferences) == id(reader.resolved_objects[(0, 24)])
+
+
+def test_build_destination__short_array():
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+
+    # An array too short to hold a page reference and a fit type degrades to a
+    # null destination instead of raising on the unpacking.
+    dest = writer._build_destination("title", ArrayObject([NumberObject(0)]))
+    assert isinstance(dest["/Page"], NullObject)
+
+    # A trailing fit type with the wrong number of arguments still builds.
+    dest = writer._build_destination(
+        "title", ArrayObject([NumberObject(0), NameObject("/FitR"), NumberObject(1), NumberObject(2)])
+    )
+    assert dest["/Type"] == "/FitR"
 
 
 @pytest.mark.enable_socket
@@ -475,6 +493,48 @@ def test_flatten__cyclic_references():
         reader._flatten()
 
 
+def test_flatten__pages_without_kids():
+    # A malformed /Pages node may advertise "/Count 0" without providing any
+    # /Kids entry. Flattening such a page tree used to raise a bare
+    # ``KeyError: '/Kids'`` instead of being handled gracefully (#3811).
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    pages_object = reader.root_object["/Pages"]
+    del pages_object["/Kids"]
+    pages_object[NameObject("/Count")] = NumberObject(0)
+    reader.flattened_pages = None
+
+    assert len(reader.pages) == 0
+    assert list(reader.pages) == []
+
+
+def test_flatten__pages_with_null_kids():
+    # A /Pages node whose /Kids resolve to a NullObject is treated the same as
+    # a missing /Kids: no children rather than a crash (#3811).
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    pages_object = reader.root_object["/Pages"]
+    pages_object[NameObject("/Kids")] = NullObject()
+    pages_object[NameObject("/Count")] = NumberObject(0)
+    reader.flattened_pages = None
+
+    assert len(reader.pages) == 0
+    assert list(reader.pages) == []
+
+
+def test_flatten__pages_with_non_array_kids():
+    # A /Pages node whose /Kids is neither an array nor null is malformed; we
+    # raise a descriptive error instead of failing obscurely on iteration.
+    reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
+
+    pages_object = reader.root_object["/Pages"]
+    pages_object[NameObject("/Kids")] = NumberObject(0)
+    reader.flattened_pages = None
+
+    with pytest.raises(PdfReadError, match=r"^Expected /Kids to be an array, got NumberObject\.$"):
+        list(reader.pages)
+
+
 @pytest.mark.enable_socket
 @pytest.mark.timeout(10)
 def test_get_outline__cyclic_references(caplog):
@@ -581,3 +641,91 @@ def test_xfa__decompression_limit():
             expected_exception=LimitReachedError, match=r"^Limit reached while decompressing. 902 bytes remaining.$"
     ):
         _ = reader.xfa
+
+
+@pytest.mark.timeout(5)
+def test_get_pages_showing_field__cyclic() -> None:
+    writer = PdfWriter()
+
+    dictionary1 = DictionaryObject()
+    reference1 = writer._add_object(dictionary1)
+    dictionary2 = DictionaryObject()
+    reference2 = writer._add_object(dictionary2)
+    dictionary3 = DictionaryObject({NameObject("/Parent"): reference2})
+    reference3 = writer._add_object(dictionary3)
+    dictionary1[NameObject("/Parent")] = reference3
+    dictionary2[NameObject("/Parent")] = reference1
+
+    with pytest.raises(
+            expected_exception=LimitReachedError,
+            match=r"^Detected cycle in /Parent hierarchy when retrieving value for key 'key'\.$"
+    ):
+        dictionary1.get_inherited("key")
+
+
+@pytest.mark.timeout(5)
+def test_get_named_destinations__cyclic(caplog) -> None:
+    writer = PdfWriter()
+
+    tree1 = TreeObject()
+    reference1 = writer._add_object(tree1)
+    tree2 = TreeObject()
+    reference2 = writer._add_object(tree2)
+    tree1[NameObject("/Kids")] = ArrayObject([reference2.indirect_reference])
+    tree2[NameObject("/Kids")] = ArrayObject([reference1.indirect_reference])
+
+    assert writer._get_named_destinations(tree=tree1) == {}
+    assert caplog.messages == ["Detected cycle in destination tree."]
+
+
+@pytest.mark.timeout(5)
+def test_get_qualified_field_name__cyclic() -> None:
+    writer = PdfWriter()
+
+    dictionary1 = DictionaryObject()
+    reference1 = writer._add_object(dictionary1)
+    dictionary2 = TreeObject()
+    reference2 = writer._add_object(dictionary2)
+    dictionary1[NameObject("/Parent")] = reference2.indirect_reference
+    dictionary2[NameObject("/Parent")] = reference1.indirect_reference
+
+    with pytest.raises(
+            expected_exception=LimitReachedError,
+            match=r"^Detected cycle in /Parent hierarchy when retrieving qualified field name\.$"
+    ):
+        _ = writer._get_qualified_field_name(parent=dictionary1)
+
+
+def test_build_outline_item__non_array_color(caplog):
+    """A malformed outline item whose /C is not an array must not crash."""
+    writer = PdfWriter()
+    writer.add_blank_page(72, 72)
+
+    item = DictionaryObject()
+    writer._add_object(item)
+    item.update({
+        NameObject("/Title"): TextStringObject("Bad color"),
+        NameObject("/Dest"): ArrayObject(
+            [writer.pages[0].indirect_reference, NameObject("/Fit")]
+        ),
+        NameObject("/C"): NumberObject(5),  # should be an [r, g, b] array
+    })
+    outlines = DictionaryObject()
+    writer._add_object(outlines)
+    outlines.update({
+        NameObject("/Type"): NameObject("/Outlines"),
+        NameObject("/First"): item.indirect_reference,
+        NameObject("/Last"): item.indirect_reference,
+    })
+    item[NameObject("/Parent")] = outlines.indirect_reference
+    writer._root_object[NameObject("/Outlines")] = outlines.indirect_reference
+
+    outline = writer.outline
+    assert outline[0]["/Title"] == "Bad color"
+    assert "/C" not in outline[0]
+    assert any("outline color" in message for message in caplog.messages)
+
+    # The same value is read again, unsanitised, while cloning the outline
+    # during append, so that path must tolerate it too.
+    target = PdfWriter()
+    target.append(writer)
